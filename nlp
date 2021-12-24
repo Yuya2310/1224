@@ -1,0 +1,967 @@
+
+# 自然言語処理編（livedoor news記事の文書分類）
+自然言語処理編では、livedoor news記事を用いて文書分類を行います。  
+文書分類とは、文書の内容に基づいて1つ以上のカテゴリに分類するタスクであり、実案件において多くの課題が文書分類とみなして  
+アプローチ可能なため、利用頻度の高い手法になります。  
+今回はアルゴリズムの工夫ではなく、大量のテキストデータをどのように学習させるのか、予測精度はどのように算出するのか、  
+精度改善のためにとり得る言語処理的な工夫は何かの確認を主題としています。
+
+  
+本資料は、以下の構成になっています。  
+- 0.はじめに（livedoor news記事の説明）
+- 1.形態素解析
+- 2.分類モデルの学習・評価  
+- 3.分類モデルの改善
+
+# 0.はじめに  
+本資料で扱うデータについて説明します。  
+livedoor news記事のwebサイトから取得したデータを利用します。分類対象とするカテゴリは以下9つとします。  
+livedoor new記事 webサイト: http://www.livedoor.com/
+
+**【分類対象のカテゴリ】** 
+- dokujo-tsushin
+- it-life-hack
+- kaden-channel
+- livedoor-homme
+- movie-enter
+- peachy
+- smax
+- sports-watch
+- topic-news
+
+データは「livedoor_dataset」フォルダ配下にカテゴリごとにディレクトリを作成し、格納しています。  
+例えば、「livedoor_dataset/dokujo-tsushin」ディレクトリ配下には「dokujo-tsushin」カテゴリに属する文書が格納されています。  
+ファイル名は、**dokujo-tsushin-XXXXXXX.txt（カテゴリ名-連番.txt）**となっており、1つのtxtファイルが文書分類を行う単位になります。
+  
+**【フォルダ構成】livedoor_dataset / カテゴリ / テキストファイル**  
+
+    livedoor_dataset    
+    ├── dokujo-tsushin   ─  dokujo-tsushin-4778030.txt
+    ├── it-life-hack      ├ dokujo-tsushin-4778031.txt
+    ├── kaden-channel     ├ dokujo-tsushin-4782522.txt
+    ├── livedoor-homme    ├ dokujo-tsushin-4788357.txt  
+    ├── movie-enter          ・・・
+    ├── peachy            └ dokujo-tsushin-6915005.txt
+    ├── smax  
+    ├── sports-watch  
+    ├── topic-news 
+    ├── CHANGES.txt
+    └── README.txt  
+
+# 1.形態素解析  
+形態素解析とは、文章や文といったテキストデータを「形態素」(≒意味を持つ単語の最小単位)ごとに区切ることで、  
+単語レベルの特徴を取得し、品詞情報を取得する処理のことを意味します。  
+例えば、「庭には二羽ニワトリがいる」という文章を以下のように形態素に分解し、意味を割り出します。  
+
+　例）庭（名詞）/に（助詞）/は（助詞）/二（数詞）/羽（助数詞）/ニワトリ（名詞）/が（助詞）/いる（動詞） 
+
+このように、形態素解析を行うことで、「庭」「ニワトリ」のような形態素と呼ばれるキーワードが抽出でき、  
+文章のカテゴリを判定させるための大きな手掛かりとなります。  
+
+「1.形態素解析」では、以下①～⑤の流れで進めます。
+- ①ライブラリのインポート
+- ②ファイル読込み関数（readfile()）の定義
+- ③ファイル書込み関数（write_report()）の定義
+- ④形態素解析用関数（dataset_processing()）の定義
+- ⑤形態素解析の実行
+
+【参考】  
+　基本編（自然言語処理100本ノック）において、形態素解析は以下の問題が参考となります。  
+　- 第4章（問題32）：https://nlp100.github.io/ja/ch04.html  
+　- 解答例：https://qiita.com/segavvy/items/64920712cc4b12e8ce51 
+
+## ①ライブラリのインポート
+以下のコードを実行し、必要なpythonのライブラリパッケージを読み込みましょう。
+
+
+```python
+#ライブラリパッケージの読込み
+import os
+import traceback
+import json
+import codecs
+import pickle
+import MeCab
+```
+
+- **os**はOS（オペレーティングシステム）に依存した機能を使うための標準ライブラリです。   
+  本資料では、ファイルやディレクトリを編集するためにインポートしています。   
+  https://docs.python.org/ja/3/library/os.html?highlight=os#module-os  
+   
+
+  
+- **traceback**モジュールは Python プログラムのスタックトレースを抽出し、書式を整え、表示するための標準インターフェースを提供します。    
+  例外やエラーが発生したときに、何が問題なのかを知るのに役立ちます。  
+  https://docs.python.org/ja/3/library/traceback.html?highlight=traceback#module-traceback  
+    
+ 
+   
+- **json**モジュールを使うとJSON(JavaScript Object Notation) 形式のファイルや文字列を解析して辞書dictなどのオブジェクトとして、  
+読み込みや書き出しをすることができます。   
+  https://docs.python.org/ja/3/library/json.html?highlight=json#module-json  
+  
+  
+- **codecs**は任意の codec でエンコードやデコードを行うためのモジュールです。ファイルの文字コードを変換することもできます。  
+  https://docs.python.org/ja/3/library/codecs.html?highlight=codecs#module-codecs  
+  
+  
+- **pickle**モジュールは、オブジェクト（学習済みモデル）を保存する機能を提供しています。  
+  https://docs.python.org/ja/3/library/pickle.html?highlight=pickle#module-pickle
+  
+  
+- **MeCab**は形態素解析機能を提供するモジュールです。(https://taku910.github.io/mecab/)  
+
+  ## ②ファイル読込み用関数(readfile())の定義  
+以下のコードを実行し、ファイル読込み用の関数readfile()を定義します。  
+文字コードはUTF-8を指定し、ファイルの中身(content)を返します。  
+※ここで定義するreadfile()関数は、④で定義する形態素解析用関数(dataset_processing())の中で利用します。
+
+
+```python
+#ファイル読込み用関数の定義（pathディレクトリ配下のファイルをutf-8で読込んでcontentに格納）
+def readfile(path):
+    with open(path, "r", encoding = "utf-8") as fp:
+        content = fp.read()
+    return content
+```
+
+## ③ファイル書込み用関数(write_report())の定義  
+  
+以下のコードを実行し、json形式のファイル書込み用の関数write_report()を定義します。  
+※ここで定義するwrite_report()関数は、④で定義する形態素解析用関数(dataset_processing())の中で利用します。
+
+
+```python
+# ファイル書込み用関数の定義（file_infoをfile_name.jsonファイルに書込む）
+def write_report(file_name, file_info):
+    with open('{}.json'.format(file_name), 'w', encoding = "utf-8") as fp:
+        json.dump(file_info, fp, indent=4, sort_keys=True, ensure_ascii=False)
+```
+
+- **format()**: 引数で前の{}の部分を置換します。  
+  使い方：https://gammasoft.jp/blog/python-string-format/  
+  
+  
+- **json.dump()**: 辞書をJSONファイルとして保存します。  
+    - 第1引数：保存したい内容  
+    - 第2引数：保存ファイルの指定  
+    - 第3引数indent：インデント幅の指定  
+    - 第4引数sort_keys：辞書の要素がキーによってソートするかどうかの指定  
+    - 第5引数ensure_ascii：出力のUnicodeエスケープの指定  
+    ensure_ascii=Falseにより、日本語がそのまま出力される  
+　  - 参考：https://note.nkmk.me/python-json-load-dump/
+
+## ④形態素解析用関数(dataset_processing())の定義  
+以下のコードを実行し、livedoor news記事を読込み、読込んだテキストデータの形態素解析を行い、  
+形態素解析の結果をjsonファイル形式で出力するdataset_processing()関数を定義します。  
+コードの中身については、後続に記載する解説を参考に理解しましょう。
+
+
+```python
+def dataset_processing(dataset_path):
+
+    try:
+        # 「livedoor_dataset」フォルダ配下のディレクトリ情報を取得します。（【参考①】os.walk()）
+        os_walk = os.walk(dataset_path)
+        dataset_json = {}
+        articles = []
+        
+        #抽出したい品詞を設定しておきます。
+        pos = ["動詞", "名詞", "形容詞", "副詞"]
+        mecab = MeCab.Tagger()
+        """
+      　「livedoor_dataset」ディレクトリ配下に格納された文書ファイルを取得し、
+　　　　　形態素解析を実施します。   　　 
+  　　  """
+        for root, dirs, files in os_walk:
+            for corpus_file in files:
+
+                #文書ファイルのパス（corpus_file_path）を取得します。（【参考②】os.path.join()）
+                corpus_file_path = os.path.join(root, corpus_file)
+
+                #ファイル名（拡張子なし）と拡張子を取得します。
+                file_name, ext = os.path.splitext(corpus_file)
+                
+                #ファイルが格納されているフォルダ名（カテゴリ名）を取得します。
+                basename_pardir = os.path.basename(
+                    os.path.dirname(corpus_file_path))
+                              
+                #拡張子が".txt"であること、及びファイル名（カテゴリ名-連番.txt）のカテゴリ名と格納先フォルダ名が一致していることを
+                #確認します。(LICENSE.txtを除外するため)
+                if ext in [".txt"] and str(corpus_file).startswith(basename_pardir):
+                    
+                    #ファイルの格納先フォルダ名を正解カテゴリとしてcategory変数に代入します。
+                    category = os.path.basename(
+                        os.path.dirname(corpus_file_path))
+                    
+                    #ファイルの中身を読込み、file_contensに代入します。（②で定義したreadfile()関数を利用）
+                    file_conents = readfile(corpus_file_path)
+            
+                    #改行マークで内容を分割します。
+                    contents = str(file_conents).split('\n')
+                    
+
+                    #文書ファイルの3行目以降を半角スペースで結合して、article_contentsに代入します。【解説①】を参照。
+                    article_contents = " ".join(contents[3:])
+                    
+                    
+                    #前処理を実施します（改行マークを削除、全角スペースを半角に変換）。【解説②】を参照。（【参考③】str.replace()）
+                    article_contents = article_contents.replace("\r\n", "")
+                    article_contents = article_contents.replace("\n", "")
+                    article_contents = article_contents.replace("　", " ")
+                    
+                    #文章の内容を形態素解析します。【解説③】を参照。（【参考④】mecab ）
+                    article_contents = mecab.parse(article_contents)
+                    
+                    #名詞、動詞、形容詞、副詞の原形だけを抽出します。【解説④】を参照。
+                    article_contents_res = []
+                    for line in article_contents.split("\n"):
+                        cols = line.split('\t')
+                        if(len(cols) < 2):
+                            break     # 区切りがなければ終了
+                        rest_cols = cols[1].split(',')
+                        if rest_cols[0] in pos:
+                            article_contents_res.append(rest_cols[6])
+
+                    article_contents1 = " ".join(article_contents_res)
+                   
+                    
+                    """
+                    articlesリストに以下の情報を追加
+                    {"category":フォルダ名（正解カテゴリ）, "download_url": URL, "pubtime": タイムスタンプ, 
+                    "article_title": タイトル, "article_contents": 形態素解析の結果 }
+                    """
+                    articles.append({"category": category, "download_url": contents[0], "pubtime": contents[
+                                    1], "article_title": contents[2], "article_contents": article_contents1})
+        
+        #articlesリストをjsonファイルとして出力します。【解説⑤】を参照。
+        dataset_json["result"] = articles
+        write_report("articles_json", dataset_json)
+        return articles
+    
+    except Exception as e:
+        traceback.print_exc()
+```
+
+dataset_processin()関数の解説を以下に記載する。
+
+- **解説①：形態素解析の対象となる情報の取得**  
+ 個々の文書ファイルは以下の形式となっています。  
+ 形態素解析の対象は「タイトル」と「本文」（3行目以降の情報）となるため、  
+ 3行目以降の情報を取得し、article_contentsに格納します。  
+ 
+　**【文書ファイルの形式】**  
+　（**1行目:URL**）http://news.livedoor.com/article/detail/4778031/  
+　（**2行目:タイムスタンプ**） 2010-05-22T14:30:00+0900  
+　（**3行目:タイトル**）ネットで断ち切れない元カレとの縁  
+　（**4行目以降:本文**）携帯電話が普及する以前、恋人への連絡ツールは一般電話が普通だった。  
+　　　　　　　　　　恋人と別れたら、手帳に書かれた相手の連絡先を涙ながらに    
+　　　　　　　　　　消す。そうすれば、いつしか縁は切れていったものである。    
+　　　　　　　　　　...  
+
+- **解説②：形態素解析の前処理**      
+形態素解析の対象となる情報（article_contents）に対し、  
+形態素解析の精度に悪影響を及ぼす要素を除外するため、以下の前処理を行います。  
+  - 改行マークの削除  
+  - 全角スペース→半角スペースへの変換
+
+
+- **解説③：形態素解析の実行**      
+前処理を行った情報（article_contents）に対し、形態素解析を実施します。 
+
+　**【形態素解析の出力例】**  
+　　**'ネット\t名詞,一般,*,*,*,*,ネット,ネット,ネット\nで\t助詞,格助詞,一般,*,*,*,で,**  
+　　**デ,デ\n断ち切れ\t動詞,自立,*,*,一段,未然形,断ち切れる,タチキレ,タチキレ\n'**  
+
+  
+- **解説④：単語の原形を抽出**        
+形態素解析の出力結果に対し、「動詞、名詞、形容詞、副詞」に限定し、**単語の原形**を分類対象として抽出します。  
+動詞、形容詞は、用い方により語形が規則的に変化します。  
+こうした語形が変化してできた形を活用形といいます。  
+活用形の形式で後続の処理をすると、意味は同じでも活用形ごとに異なる単語として扱われるため、文章分類へ悪影響となります。  
+これを防ぐため、単語の原型を利用するこが一般的になります。    
+
+　**【単語の原型抽出の例】**  
+　　**ネット 　断ち切れる 　縁　 携帯　 電話　 普及　 する　 以前　 恋人　 連絡　 ツール　 一般　 電話　 普通　 恋人　 別れる**   
+　　**手帳 　書く 　れる　 相手 　連絡 　先 　涙　 消す　 そう 　する　 いつしか 　縁　 切れる　 いく**  
+
+
+- **解説⑤：JSONファイル形式で出力**    
+形態素解析、及び単語の原型抽出を行った結果をJSONファイル形式で出力します。  
+データを記述する形式として、CSV, XML, JSONなど様々なものが存在しています。  
+JSONファイル形式以下のようなメリットがあり、一般的に利用されています。（参考：https://lab.life-socket.jp/blog/12）  
+ - 配列とオブジェクトをネスト構造で表現できるため、どんなに複雑なデータ構造でも規定可能  
+ - シンプルなので動きも軽い  
+ - XMLよりも記述量が少なく人が見て分かりやすい
+ 
+　　今回の分析対象となるテキストデータは、「カテゴリ・URL・タイムスタンプ・タイトル・本文」など情報量が多く、    
+　　且つ、Pythonは辞書型データとの互換性が高いという理由から、出力ファイル形式としてJSONを選定しました。
+
+　　**【JSONファイル形式の例】**   
+  　　 {  
+    　　　**'category'（フォルダ名（正解カテゴリ））**: 'dokujo-tsushin',   
+    　　　**'download_url'（URL）**: 'http://news.livedoor.com/article/detail/4778031/',   
+    　　　**'pubtime'（タイムスタンプ）**: '2010-05-21T14:30:00+0900',   
+    　　　**'article_title'（タイトル）**: 'ネットで断ち切れない元カレとの縁',   
+    　　　**'article_contents’（形態素解析の結果）**: 'ネット 断ち切れる * 縁 携帯 電話 普及 する 以前 恋人 連絡 ツール 一般   
+     　　　　　　　　　　　　　　　　　　　　　電話 普通 恋人 別れる 手帳 書く れる 相手 連絡 先 涙 消す そう する   
+　　　　　　　　　　　　　　 　　　　　　　いつしか 縁 切れる いく もの 現在 携帯 電話 ある メール ある インターネット   
+              　　　　　　　　　　　　　　　　　　　　　開く 相手 晩 飯 わかる しまう 赤裸々 ご時世 切る 切れる  
+　　　　　　　　　　　　　　　　　　　　　　　...  
+    　　} 
+
+dataset_processin()関数で利用されている関数、パッケージの参考情報を以下に記載する。
+
+- **参考①：os.walk()**  
+os.walk():指定したディレクトリからトップダウンの流れでディレクトリを探索します。  
+戻り値：①ディレクトリ名：String  
+　　　　②内包するディレクトリ一覧：list  
+　　　　③内包するファイル一覧：list  
+ 参考：https://www.sejuku.net/blog/67787  
+
+  
+- **参考②：os.path.join()**  
+os.path.join(): 引数に指定した文字列がパス区切り文字（"/"）で結合します。  
+os.path.splitext(): パス文字列を一番右の"."で分割し、拡張子とそれ以外に分割された部分をタプルとして返します。  
+os.path.basename(): パス文字列から拡張子を含むファイル名を取得します。  
+os.path.dirname(): パス文字列からフォルダ名（ディレクトリ名）を取得します。  
+参考：https://note.nkmk.me/python-os-basename-dirname-split-splitext/  
+
+
+- **参考③：str.replace()**  
+str.replace()：文字列を指定して置換します。第1引数に置換元文字列、第2引数に置換先文字列を指定します。  
+関連：100本ノック第2章問題11：https://nlp100.github.io/ja/ch02.html    
+解答例：https://qiita.com/segavvy/items/85e78ce405daf10d0ed6  
+  
+  
+- **参考④：mecab**  
+mecab = MeCab.Tagger('-Owakati')　mecab.parse(): ()内のテキストに対して分かち書きを行います。   
+分かち書きは下記のようにテキストデータを「形態素」毎に区切り、テキスト処理を容易にします。  
+
+　　例）庭/に/は/二/羽/ニワトリ/が/いる  
+
+　　日本語や中国語は英語とは異なり、通常スペースによって単語が区切られていないため、  
+　　テキスト処理を行う際には、分かち書きを行い単語の区切りを明確にする必要があります。    
+  
+　　  Mecab環境構築：https://www.pytry3g.com/entry/2018/04/24/143934#Windows  
+  　　MeCabの使い方：https://mieruca-ai.com/ai/morphological_analysis_mecab/  
+
+
+## ⑤形態素解析の実行
+「④形態素解析用関数(dataset_processing())の定義」で定義したdataset_processing()関数を用いて、  
+実際のlivedoor news記事に対して形態素解析を実行します。  
+「livedoor_dataset」フォルダのパスをdataset_pathに代入し、実行してみましょう。
+
+
+```python
+#dataset_path: 各自の環境にある「livedoorニュースdataset」フォルダのパスを指定してください。
+dataset_path ="C:/Users/XXXXXXX/Desktop/育成コンテンツ/応用問題資材/livedoor_dataset"
+articles = dataset_processing(dataset_path)
+```
+
+以下のコードを実行し、articlesに形態素解析の結果が格納されていることを確認してみましょう。
+
+
+```python
+print(articles[1])
+```
+
+- pprintモジュールを利用し、データを見やすい形で出力してくれます。  
+以下のコードを実行し、上記の結果と比較してください。  
+参考：https://docs.python.org/ja/3/library/pprint.html
+
+
+```python
+import pprint
+pprint.pprint(articles[1])
+```
+
+# 2.分類モデルの学習・評価  
+  
+「2.分類モデルの構築・評価」では、「1.形態素解析」で取得した結果（articles）をもとに、  
+文書分類モデルを構築・評価するためのデータセット（※）を作成し、分類モデルの学習と精度評価を行います。  
+※データセットの種類は以下になります。  
+・分類モデルを学習するための学習・検証用データ  
+・学習した分類モデルを評価するための評価用データ
+
+「2.分類モデルの学習・評価」は以下の流れで進めます。  
+- 2-1.データセット（学習・検証・評価用データ）の作成  
+ - ①特徴抽出関数(feature_extractor_TfidfVectorizer())の定義   
+ - ②データセット分割関数（dataset_slip()）の定義   
+ - ③データセットの作成   
+<br>  
+- 2-2.分類モデルの学習  
+ - ①分類モデルの学習用関数(fit_and_predicted())の定義  
+ - ②分類モデルの学習  
+<br> 
+- 2-3.分類モデルの評価  
+ - ①分類モデルの評価関数(test_predicted())の定義  
+ - ②分類モデルの評価  
+<br>  
+- 2-4.分類モデル結果の確認  
+ - ①分類結果の出力  
+ - ②予測結果の分析  
+
+# 2-1. データセット（学習・検証・評価用データ）の作成
+## ①特徴抽出関数（feature_extractor_TfidVectorizer()）の定義
+
+「1.形態素解析」で取得した形態素解析の結果（articles）に対し、  
+単語の重要度を示すtfidf値（※）を求める関数feature_extractor_TfidVectorizer()を定義します。    
+分類モデルの学習では、このtfidf値をもとに、文書のカテゴリを判定する上で各単語がどれくらい寄与しているのかを学習します。
+
+※tfidf値の詳細は以下を参照して下さい。  
+https://www.takapy.work/entry/2019/01/14/141423    
+https://blog.amedama.jp/entry/tf-idf  
+  
+以下のコードを実行し、特徴抽出用のfeature_extractor_TfidfVectorizer()を定義しましょう。  
+※ここで定義するfeature_extractor_TfidfVectorizer()関数は、②で定義するdataset_slip()関数の中で利用します。
+
+
+```python
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+#特徴抽出用のfeature_extractor_TfidfVectorizer()を定義
+def feature_extractor_TfidfVectorizer(input_x, filter_stop_words=False, case='tfidf', max_df=1.0, min_df=0.0, token_pattern=u'(?u)\\b\\w+\\b', verbose=True):
+    vect = TfidfVectorizer(token_pattern=token_pattern, ngram_range=(1, 2), max_df=max_df, min_df=min_df)
+    return vect.fit_transform(input_x)
+```
+
+- **TfidfVectorizer()**：
+  Pythonの機械学習ライブラリscikit-learnから、tfidf値を計算するための関数です。  
+  token_pattern:デフォルトで1文字の文字や文字列をトークンとして扱わない仕様のため、  
+  引数にtoken_pattern=u'(?u)\\b\\w+\\b'（1文字以上任意の文字列）を追加することで除外しないようにします。  
+  ngram_range: N-gramのNの下限と上限をタプルで指定します。  
+  max_df: df値がこの閾値より大きい、あまりにも出現している単語は排除します。  
+  min_df: df値がこの閾値より小さい、あまりにも出現していない単語は排除します。 
+  
+  
+- **feature_extractor_TfidfVectorizer()の引数**  
+  input_x：入力データ  
+  case：デフォルトではtfidfを指定します。  
+  filter_stop_words: ストップワードの有無を指定します。（ストップワードについて、[2.5-①](#section_2.5_1)をご参照ください。）<a id='section_2.1_1'></a>  
+  max_df: df値がこの閾値より大きい、あまりにも出現している単語は排除します。  
+  min_df: df値がこの閾値より小さい、あまりにも出現していない単語は排除します。  
+  token_pattern:デフォルトで1文字の文字や文字列をトークンとして扱わない仕様のため、  
+　              　　引数にtoken_pattern=u'(?u)\\b\\w+\\b'（1文字以上任意の文字列）を追加することで除外しないようにします。  
+
+  
+- **vect.fit_transform()**：文章内の全単語の特徴量（tfidf値）を取得します。
+
+## ②データセット分割関数（dataset_slip()）の定義
+
+①で定義した特徴抽出関数（feature_extractor_TfidVectorizer()）を用いて、tfidf値を算出し、  
+出力結果のデータを学習用、検証用、評価用に分割する関数（dataset_slip())を定義します。
+
+以下のコードを実行し、データセット分割関数（dataset_slip())を定義しましょう。
+
+
+```python
+from sklearn.model_selection import train_test_split
+
+#データセットを学習(training)、検証(evaluation/validation)、評価(test)用に分割するためのdataset_slip()を定義します。
+#【参考①】dataset_slip()の引数
+
+def dataset_slip(articles, filter_stop_words=False, percentage=(0.4, 0.5)):
+    try:
+
+        articles_data = []
+        articles_target = []
+        #学習に使わないデータの割合を0.4に設定します。（検証・評価用データの割合）
+        percentage_test = percentage[0]
+        #検証用データの割合を0.5に設定します。
+        percentage_eval = percentage[1]
+        
+        #入力データarticlesを文章内容データ（articles_data）とカテゴリーデータ（articles_target）に分けます。
+        for article_info in articles:
+            articles_data.append(article_info["article_contents"])
+            articles_target.append(article_info["category"])
+            # print("article contents :{}".format(article_info["article_contents"]))
+        '''
+        # ステップ２：tfidf値の取得
+        '''
+        #文章内容リスト（articles_data）を入力し、特徴量(tfidf値)を取得します。（①で定義したfeature_extractor_TfidVectorizer()）を利用）
+        
+        features = feature_extractor_TfidfVectorizer(
+                articles_data, filter_stop_words=filter_stop_words)
+        
+        '''
+        # ステップ３：データセット分割（【参考②】を参照）
+        '''
+        #X_train：featuresの60%を学習データとして取得します。
+        #X_last：featuresの40%を検証データ&評価データとして取得します。
+        #y_train：カテゴリーデータ（articles_target）の60%を学習データとして取得します。
+        #y_last：カテゴリーデータ（articles_target）の40%を検証データ&評価データとして取得します。
+        X_train, X_last, y_train, y_last = train_test_split(
+            features, articles_target, test_size=percentage_test, random_state=0)
+
+        #X_eval：X_lastの50%を検証データとして取得します。
+        #X_test：X_lastの50%を評価データとして取得します。
+        #y_eval：y_lastの50%を検証データとして取得します。
+        #y_test：y_lastの50%を評価データとして取得します。    
+        X_eval, X_test, y_eval, y_test = train_test_split(
+            X_last, y_last, test_size=percentage_eval, random_state=0)
+
+        print("分割前：{},分割後：X_train：{},X_eval：{},X_test：{},".format(
+            len(articles_data), X_train.shape[0], X_eval.shape[0], X_test.shape[0]))
+        
+        #学習データ、検証データ、評価データを返します。
+        return features, X_train, X_eval, X_test, y_train, y_eval, y_test
+
+    except Exception as e:
+
+        traceback.print_exc()
+```
+
+- **参考①：dataset_slipの引数**  
+    - articles：入力データです。  
+    - filter_stop_words：ストップワードの有無を指定します。（ストップワードについて、[2.5-①](#section_2.5_1)をご参照ください。）<a id='section_2.1_2'></a>    
+    - feature_type：デフォルトではtfidとして設定します。  
+    - percentage（※）：データ分割の割合。デフォルトで(0.4, 0.5)のタプルを設定します。   
+      それぞれ、以下の割合を示します。  
+      0.4　→学習に利用しないデータ（検証・評価用）の割合（★）  
+      0.5　→★に対する検証用データの割合  
+      例えば、100件のデータにおいてpercentage=(0.4, 0.5)の場合、以下のようになります。
+        - 学習用：100×0.6 = 60件   
+        - 検証用：100×0.4×0.5 = 20件  
+        - 評価用：100×0.4×0.5 = 20件  
+
+
+
+- **参考②：train_test_slip**   
+Pythonの機械学習ライブラリscikit-learnからインポートした、train_test_split()を用いてデータセットの分割を行います。  
+train_test_splitの使い方は以下を参照して下さい。  
+https://note.nkmk.me/python-sklearn-train-test-split/  
+            
+
+## ③データセットの作成  
+
+②で定義したデータセット分割関数（dataset_slip()）を用いて、「1.形態素解析」で取得した形態素解析の出力結果（articles）を  
+学習用、検証用、評価用データに分割します。  
+以下のコードを実行し、データセットを作成しましょう。  
+（データセットの件数の割合がdataset_slip()のpercentageで設定した値になっていることを確認しましょう）
+
+
+```python
+# データセットの作成（学習用；train,検証用：eval,評価用：test）
+features, X_train, X_eval, X_test, y_train, y_eval, y_test = dataset_slip(articles, filter_stop_words=False)
+```
+
+以下のコードを実行し、変数（features）の中身を確認してみましょう。  
+以下のような結果が出力されています。  
+(a, b) c  
+- a：document_id（0~7366）
+- b：token_id（get_feature_names()でtoken_idが対応している単語を確認できます。）
+- c：tokenのtf-idfスコア
+
+
+```python
+print(features)
+```
+
+
+```python
+# モデルの学習・テスト評価結果を格納用
+ret_output = []
+ret_output.append("全データ件数：{}、TRAIN件数：{}、EVAL件数：{}、TEST件数：{} \n".format(len(articles), X_train.shape, X_eval.shape, X_test.shape))
+```
+
+# 2-2.分類モデルの学習
+## ①分類モデルの学習用関数(fit_and_predicted())の定義 
+
+「2-2.分類モデルの学習」では、「2-1.データセット（学習・検証・評価用データ）の作成」にて作成した、  
+学習用、検証用データを用いて、分類モデルの学習を行います。
+
+まず、分類モデルの学習を行うfit_and_predicted()関数を定義します。  
+fit_and_predicted()関数は、学習用データを用いて分類モデルを学習します。  
+さらに、学習済みの分類モデルに対し、検証用データを用いて分類精度を評価します。  
+また、学習済みのモデルと分類精度を返り値として返します。  
+
+コードの中身については、後続に記載する解説を参考に理解しましょう。  
+※ここで定義したfit_and_predicted()関数は、「②分類モデルの学習」で利用します。
+
+
+```python
+# 機械学習ライブラリのインポート
+from sklearn.linear_model import LogisticRegression 
+from sklearn import metrics
+
+#分類モデルの学習を行います。
+def fit_and_predicted(train_x, train_y, test_x, test_y, penalty='l2', C=1.0, solver='lbfgs', test_no="001"):
+    
+    ret_output = []
+    
+    #分類モデルの学習を実施します。（ロジスティック回帰モデルを使用。【参考①】LogisticRegressionを参照）
+    clf = LogisticRegression(penalty=penalty, C=C,
+                             solver=solver, n_jobs=-1).fit(train_x, train_y)
+    
+    #学習済みの分類モデルに対し、検証用データで精度を確認します。
+    predicted = clf.predict(test_x)
+    print('*****************EVAL*****************')
+    ret_output.append('*****************EVAL*****************\n')
+    
+    #検証用の正解データと予測結果を入力し、カテゴリ毎の分類精度（適合率、再現率、F値）を出力します。（【参考②】metricsを参照）
+    print(metrics.classification_report(test_y, predicted))
+    ret_output.append(metrics.classification_report(test_y, predicted)+"\n")
+    
+    #全体（全カテゴリ）の分類精度を出力します。
+    print('accuracy_score: %0.5f' %
+          (metrics.accuracy_score(test_y, predicted)))
+    ret_output.append('accuracy_score: %0.5f' %
+                      (metrics.accuracy_score(test_y, predicted))+"\n")
+    
+    #学習済みの分類モデルを「model_save」フォルダ配下に保存します。
+    path = './model_save'
+    if not os.path.exists(path):
+        try:
+            os.mkdir(path)
+        except OSError:
+            print ("Creation of the directory %s failed" % path)
+        else:
+            print ("Successfully created the directory %s " % path)
+    filename = './model_save/model_{}.sav'.format(test_no)
+    pickle.dump(clf, open(filename, 'wb'))
+    
+    #学習済みの分類モデル（clf)と分類精度(ret_output)を返します。
+    return clf, ret_output
+```
+
+
+- **参考①：LogisticRegression**  
+Pythonの機械学習ライブラリscikit-learnからインポートしたLogisticRegressionにて、分類モデルを構築します。   
+LogisticRegression()の詳細については以下を参照して下さい。  
+公式：https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html     
+    
+  LogisticRegression()の引数について以下に詳細を説明します。
+  - penalty:モデルの複雑さに対するペナルティを表します。  
+    - penaltyに入力できる値は‘L1’と‘L2’の2種類です。    
+    - 基本的には‘L2’を選べば大丈夫ですが、‘L1’を選ぶ方が欲しいデータが得られる場合もあります。    
+    - L1:データの特徴量を削減することで識別境界線の一般化を図るペナルティです。  
+    - L2:データ全体の重みを減少させることで識別境界線の一般化を図るペナルティです。  
+    
+  - solver: 最適化のアルゴリズムを設定します。入力できる値は‘newton-cg’, ‘lbfgs’, ‘liblinear’, ‘sag’, ‘saga’です。  
+    - データセットに対して:
+        - liblinear：小さいデータセットに対し設定  
+        - sag、saga：大きいデータセットに対し設定（学習の収束が早い）  
+    - 多次元問題に対して:  
+       - newton-cg、sag、saga、lbfgs：多項式損失関数を扱える  
+       - liblinear：1対他に限られる  
+    - 正則化に対して:  
+       - lbfgs、sagはL2正則化に対してのみ使用可能。他は両方可能  
+  
+  - n_jobs：CPUコアの使用個数を設定できます。  
+  　　　　-1にすると使用可能なすべてのCPUコアを使用します。  
+- **参考②：metrics**  
+Pythonの機械学習ライブラリscikit-learnからインポートしたmetricsにて、分類モデルを構築します。  
+metricsの詳細については以下を参照して下さい。  
+公式：https://scikit-learn.org/stable/modules/classes.html?highlight=metrics#module-sklearn.metrics  
+参考：http://data-analysis-stats.jp/2019/11/09/モデルの評価モジュールのsklearn-metrics  
+ 
+    **metrics.classification_report()**は、正解データと予測結果を引数として適合率、再現率、F値、個数を算出します。  
+    出力の例を以下に記載します。左から順に、適合率（precision）、再現率（recall）、F値（f1-score）、個数（support）が表示されます。
+ 
+    【出力例】  
+ 
+|class|precision|recall|f1-score|support|  
+|------|------|------|------|------|
+|dokujo-tsushin|0.84|0.87|0.85|179|  
+|it-life-hack|0.91|0.89|0.90|173|  
+|kaden-channel|0.94|0.90|0.92|170|  
+|livedoor-homme|0.96|0.53|0.68|104|  
+
+## ②分類モデルの学習  
+「2-1.学習データセット（学習・検証・評価用データ）の作成」にて作成した学習・検証用データと、  
+①で定義したfit_and_predicted()を用いて、分類モデルの学習を行います。（10分程度かかります。）  
+
+以下のコードを実行して、分類モデルの学習を行いましょう。
+
+
+```python
+#分類モデルの学習
+model, ret_output1 = fit_and_predicted(X_train, y_train, X_eval, y_eval,test_no='001')
+```
+
+# 2-3.分類モデルの評価
+## ①分類モデルの評価関数(test_predicted())の定義
+
+「2-3.分類モデルの評価」では、「2-2.分類モデルの学習」にて学習した分類モデルを用いて、  
+評価用データに対する精度を算出します。  
+
+まず、分類モデルの予測精度を算出するtest_predicted()関数を定義します。  
+test_predicted()は、学習済み分類モデル、評価用データを入力とし、  
+精度結果（カテゴリ毎の適合率、再現率、F値、全カテゴリに対する正解率）を算出します。  
+さらに、精度結果をテキストファイルに書込むwrite_result()関数を定義します。  
+
+
+```python
+#評価データを用いて分類モデルを評価します。
+def test_predicted(model, test_x, test_y):
+    predicted = model.predict(test_x)
+    ret_output = []
+    print('*****************TEST*****************')
+    ret_output.append('*****************TEST*****************'+"\n")
+    
+    #分類の結果要約を出力し、ret_outputに追加します。
+    print(metrics.classification_report(test_y, predicted))
+    ret_output.append(metrics.classification_report(test_y, predicted)+"\n")
+    
+    #正解率(小数点後5位まで)を出力し、ret_outputに追加します。
+    print('accuracy_score: %0.5f' %
+          (metrics.accuracy_score(test_y, predicted)))
+    ret_output.append('accuracy_score: %0.5f' %
+                      (metrics.accuracy_score(test_y, predicted))+"\n")
+    
+    #ret_output（結果要約と正解率）を返します。
+    return ret_output
+
+#結果出力用のwrite_result()を定義します。
+#結果出力をeval_result.txtとして保存します。
+def write_result(save_path="./eval_result.txt", content=[]):
+    target_file = codecs.open(save_path, 'w', 'utf-8')  # ファイルを開く
+    for print_out in content:
+        target_file.write(print_out)
+    target_file.close()
+```
+
+## ②分類モデルの評価
+①で定義したtest_predicted()関数を用いて、予測精度を算出します。  
+また、①で定義したwrite_result()関数を用いて、精度結果をファイルに保存します。  
+
+
+```python
+# モデルの評価を行います。
+ret_output2 = test_predicted(model, X_test, y_test)
+
+# 評価結果をファイルに書き込みます。（【参考①】extend()とappend()）
+ret_output.extend(ret_output1)
+ret_output.extend(ret_output2)
+write_result(save_path="./eval_result_{}.txt".format('001'),content=ret_output)
+```
+
+- **【参考①】extend()とappend()**  
+　extend()とappend()の違いは以下の通りです。
+
+ - **extend()** 
+  mylist = ["A", "B", "C"]  
+  mylist.extend(["D", "E"])  
+  --> ["A", "B", "C", "D", "E"]  
+  <br>
+ - **append()**
+  mylist = ["A", "B", "C"]  
+  mylist.append(["D", "E"])  
+  --> ["A", "B", "C", ["D", "E"]]  
+
+# 2-4.評価結果の分析 
+## ①混同行列表示関数（test_predicted2()）の定義
+
+「2-3.分類モデルの評価」の評価結果より、「livedoor-homme」と「peachy」のカテゴリに対する精度が低くなっています。  
+「2-4.評価結果の分析」では、これらのカテゴリの精度が低い原因を分析します。  
+
+具体的には、混同行列（※）を作成し「livedoor-homme」と「peachy」に対する誤り分析を行います。  
+誤り分析とは、「livedoor-homme」と「peachy」がどのカテゴリと誤って判定される傾向にあるのかを調査し、その原因を探ります。  
+
+※混同行列とは、    
+混同行列 (Confusion matrix)：各テストデータに対するモデルの予測結果を、真陽性(True Positive)、真陰性(True Negative)、    
+偽陽性(False Positive)、偽陰性(False Negative)の4つの観点で分類をし、それぞれに当てはまる予測結果の個数をまとめた表です。    
+参考：https://pythondatascience.plavox.info/scikit-learn/分類結果のモデル評価
+
+まず、混同行列を表示するtest_predicted2()関数を定義します。  
+test_predicted2()は学習済み分類モデル、評価用データを入力とし、混同行列を出力する関数です。　　  
+以下のコードを実行し、test_predicted2()関数を定義しましょう。
+
+
+```python
+#それぞれのカテゴリの文章がどのように分類されているか確認します。
+from sklearn.metrics import confusion_matrix
+def test_predicted2(model, test_x, test_y):
+    predicted = model.predict(test_x)
+   
+    print(confusion_matrix(test_y, predicted))
+    
+    print('accuracy_score: %0.5f' %
+          (metrics.accuracy_score(test_y, predicted)))
+```
+
+## ②誤り分析  
+
+①で定義したtest_predicted2()関数を用いて、混同行列を出力し、誤り分析を行います。  
+以下のコードを実行し、混同行列を表示しましょう。  
+
+
+```python
+#混同行列の表示
+test_predicted2(model, X_test, y_test)
+```
+
+上記の結果に対し、カテゴリ情報を付与した混同行列を以下に表示します。  
+下記より、以下のことが分かります。
+- 「dokujo-tsushin」と「peachy」の文書は判別しにくい。（<span style="color: red; ">赤字</span>部分を参照）
+- 「livedoor-homme」の文書は「dokujo-tsushin」または「peachy」と誤って判定される傾向がある。（<span style="color: blue; ">青字</span>部分を参照）
+
+以降でこれらの原因を調査していきます。  
+ 
+ 【混同行列】
+  
+|                                | 「dokujo-tsushin」と識別 | 「it-life-hack」と識別 | 「kaden-channel」と識別 | 「livedoor-homme」と識別 | 「movie-enter」と識別 | 「peachy」と識別 | 「smax」と識別 | 「sports-watch」と識別 | 「topic-news」と識別 |
+|--------------------------------|--------------------------|------------------------|-------------------------|--------------------------|-----------------------|------------------|----------------|------------------------|----------------------|
+| <span style="color: red; ">dokujo-tsushin</span> | 147                      | 1                      | 1                       | 0                        | 4                     | <span style="color: red; ">15</span>               | 0              | 2                      | 1                    |
+| it-life-hack   | 0                        | 160                    | 5                       | 0                        | 1                     | 3                | 3              | 2                      | 3                    |
+| kaden-channel  | 1                        | 5                      | 171                     | 1                        | 1                     | 6                | 0              | 0                      | 3                    |
+|<span style="color: blue; ">livedoor-homme</span> | <span style="color: blue; ">12</span>                       | 2                      | 6                       | 53                       | 2                     | <span style="color: blue; ">18</span>               | 1              | 4                      | 0                    |
+| movie-enter    | 1                        | 0                      | 1                       | 0                        | 161                   | 2                | 0              | 0                      | 0                    |
+| <span style="color: red; ">peachy</span>           |  <span style="color: red; ">14</span>                       | 1                      | 0                       | 1                        | 4                     | 143              | 1              | 2                      | 0                    |
+| smax           | 0                        | 0                      | 0                       | 0                        | 0                     | 3                | 171            | 0                      | 0                    |
+| sports-watch   | 0                        | 0                      | 0                       | 0                        | 0                     | 0                | 0              | 183                    | 0                    |
+| topic-news     | 0                        | 0                      | 0                       | 0                        | 0                     | 1                | 1              | 8                      | 142                  |    
+  
+
+
+はじめに、「dokujo-tsushinとpeachyの文書は判別しにくい」原因の調査を行います。  
+まずは、以下のコードを実行し、実際に「dokujo-tsushin」と「peachy」の文章の中身を確認してみましょう。
+
+
+```python
+#peachyカテゴリーにある文章のサンプルを出力します。
+import pprint
+peachy_articles = [x for x in articles if x['category'] == 'peachy']
+pprint.pprint(peachy_articles[1:10])
+```
+
+
+```python
+#peachyカテゴリーにある文章のサンプルを出力します。
+dokujo_articles = [x for x in articles if x['category'] == 'dokujo-tsushin']
+pprint.pprint(dokujo_articles[1:10])
+```
+
+上記の結果を確認すると、  
+dokujo-tsushinとpeachyの文章が<span style="color: red; ">いずれも女性向けの内容であり、使用されている単語が類似</span>していることが、  
+判別誤りの原因であると考えられます。  
+例えば、以下のような単語がdokujo-tsushinとpeachy両方の文章に出現しています。  
+「女性」「メイク」「美しい」「肌」「魅力」  
+  
+例：dokujo-tsushin:  
+    「女性 メイク する 上 最も 気合 入る の」  
+      peachy:  
+    「個人 的 女性 メイク する 顔 魅力 感じる」    
+
+# 2-5.分類モデルの改善  
+
+上記の分析結果から、分類モデルを改善するためには、dokujo-tsushinとpeachyの判別精度を上げる必要があります。    
+しかし、tfidf値を特徴量として利用している場合、アルゴリズムの変更なしに、使用されている単語が類似する文書間の  
+判別精度を向上させるのは難しい問題になります。  
+よって、今回は「dokujo-tsushin」と「peachy」間の判別精度向上に対する改善ではなく、  
+分類モデル全体の精度を向上させるために、ストップワードの導入を行います。  
+<a id='section_2.5_1'></a>    
+## ①ストップワードの確認
+([2.1-①](#section_2.1_1)、[2.1-②](#section_2.1_2)に戻る)  
+ストップワードの導入とは、自然言語処理を行う際にデータセットに含まれる不要な記号や単語を前処理の段階で除去することです。   
+例えば、助詞や助動詞などの機能語(「は」「の」「です」「ます」など)が挙げられます。  
+これらの単語は出現頻度が高い割に役に立たず、計算量や性能に悪影響を及ぼすため除去することでモデルの精度改善に効果を発揮します。    
+  
+【参考】日本語のストップワードが有志によって公開されているものがあります。以下で入手できます。  
+https://github.com/stopwords-iso/stopwords-ja/blob/master/stopwords-ja.txt  
+  
+  
+
+まず、今回デフォルトで用意しているストップワードを確認しましょう。  
+ストップワードは、「応用問題資材」フォルダに格納されているstopwords-ja.txtに記載されています。  
+参照する際には、以下のコードを実行しましょう。
+
+
+```python
+JAPANESE_STOP_WORDS = []
+
+#もしstopwords-ja.txtが存在する場合、改行マークを削除し、JAPANESE_STOP_WORDSに代入します。
+if os.path.exists("stopwords-ja.txt"):
+    with open("stopwords-ja.txt", 'r', encoding = "utf-8") as f:
+        JAPANESE_STOP_WORDS = f.readlines()
+        JAPANESE_STOP_WORDS = [str(x).replace('\n', "")
+                               for x in JAPANESE_STOP_WORDS]
+        
+#ストップワードの単語数と内容を出力し確認します。
+print("The length of JAPANESE_STOP_WORDS :{} ".format(len(JAPANESE_STOP_WORDS)))
+print(JAPANESE_STOP_WORDS)                              
+                               
+```
+
+## ②特徴量抽出メソッド(feature_extractor_TfidfVectorizer())にストップワードの導入  
+feature_extractor_TfidfVectorizer()にストップワードを追加します。
+
+
+```python
+def feature_extractor_TfidfVectorizer(input_x, filter_stop_words=False, case='tfidf', max_df=1.0, min_df=0.0, token_pattern=u'(?u)\\b\\w+\\b', stop_words=JAPANESE_STOP_WORDS):
+
+    if filter_stop_words:
+
+        vect = TfidfVectorizer(token_pattern=token_pattern, ngram_range=(
+            1, 2), max_df=max_df, min_df=min_df, stop_words=JAPANESE_STOP_WORDS)
+    else:
+        vect = TfidfVectorizer(token_pattern=token_pattern, ngram_range=(
+            1, 2), max_df=max_df, min_df=min_df)
+
+    return vect.fit_transform(input_x)
+```
+
+## ③データセットの再作成
+
+**【問題】**「2-1. データセット（学習・検証・評価用データ）の作成」で定義したdataset_slip()関数を用いて、  
+　　　　　ストップワードを導入した際の、データセットを作成してみましょう。
+
+
+```python
+#【問題】 データセット再度作成（train,eval,test）
+
+
+
+```
+
+# ④分類モデルの再学習
+
+**【問題】**「2-2.分類モデルの学習」の「②分類モデルの学習」を参考に③で再作成したデータセット（学習用、検証用データ）を用いて  
+　　　　　分類モデルを再学習してみましょう。
+
+
+```python
+#【問題】分類モデルの再学習
+
+
+
+```
+
+# ⑤分類モデルの再評価  
+    
+**【問題】**「2-3.分類モデルの評価」の「②分類モデルの評価」を参考に④で学習した分類モデルを再評価してみましょう。  
+
+
+```python
+#【問題】分類モデルの再評価
+
+
+
+```
+
+# ⑤改善結果の確認
+
+**【問題】**「2-4.評価結果の分析」の「②誤り分析」を参考に、評価用データを用いて混同行列を表示し、  
+　　　　　⑤の評価結果を分析してみましょう。  
+
+
+```python
+#【問題】評価結果の分析（混同行列の表示）
+
+
+
+```
+
+# 自由課題
+
+自身の分析結果の基づき、モデル精度の更なる改善を行ってみましょう。  
+その他に想定される工夫として、以下が挙げられます。    
+- 数値の0置換
+- 英字の大文字小文字統一
+- Mecab辞書の変更(Neologd:https://github.com/neologd/mecab-ipadic-neologd)
+- 単語の正規化  
+  
+  
+上記が主にテキストデータに対する前処理の手法になり、うまく改善できない場合が存在します。  
+ほかにはWord2VecやBERTなどのより新しい手法を使用することが考えられますが、本資料の範囲外になるため、割愛します。
